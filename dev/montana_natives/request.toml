@@ -1,0 +1,46 @@
+# Multi-species example — three Montana native forbs in ONE request -> a 3-class
+# image-classification dataset.
+#   pixelflora run dev/montana_natives/request.toml
+
+[[species]]
+genus   = "Lupinus"
+species = "sericeus"        # silky lupine
+
+[[species]]
+genus   = "Gaillardia"
+species = "aristata"        # blanketflower
+
+[[species]]
+genus   = "Achillea"
+species = "millefolium"     # common yarrow
+
+[sources]
+enabled = ["inaturalist"]
+
+[filters]
+has_coordinates        = true
+require_research_grade = true
+exclude_captive        = true
+year_range             = [2015, 2026]
+
+[media]
+max_images            = 100       # PER class (so up to ~300 images across 3 classes)
+images_per_occurrence = 1
+min_pixels            = 200
+max_dimension         = 1024
+
+[output]
+dir = "dev/montana_natives/out"
+
+[split]
+strategy      = "random"          # applied WITHIN each class -> every class in both splits
+test_fraction = 0.25
+seed          = 1312
+
+[publish]
+private = true
+push    = false
+
+[dataset]
+name        = "Montana native forbs (3 species)"
+description = "Lupinus sericeus, Gaillardia aristata, and Achillea millefolium for a multi-class botanical classifier, from iNaturalist."

@@ -1,0 +1,21 @@
+# pixelflora global configuration (non-secret defaults).
+# Secrets are read from environment variables, never stored here:
+#   HF_TOKEN (or HUGGINGFACE_TOKEN)   -> pushing private datasets to the Hub
+
+[http]
+# Identify ourselves politely to data providers. Edit the contact to your own.
+user_agent   = "pixelflora/0.1 (+https://github.com/mosscoder/pixelflora; contact: kdoherty@mpgranch.com)"
+contact_email = "kdoherty@mpgranch.com"
+timeout_s    = 60
+max_retries  = 4
+rate_limit_s = 1.0           # iNaturalist best practice: <= 1 request/second (<= 60/min)
+download_workers = 1         # keep within iNat's ~1 req/s guidance for image fetches too
+
+[cache]
+dir = ".pixelflora_cache"    # raw API responses are cached here for replay/reproducibility
+
+[publish]
+# THE PRODUCT WE SHIP IS A MODEL; the image dataset is private training data.
+private = true               # all datasets are created private by default
+owner   = ""                 # default HF namespace (e.g. "mosscoder"); empty -> use token's
+push    = false              # never push unless a request explicitly opts in

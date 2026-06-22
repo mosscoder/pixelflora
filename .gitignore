@@ -1,0 +1,11 @@
+# caches & generated outputs
+.pixelflora_cache/
+**/out_inat/
+**/out_gbif/
+out/
+*.egg-info/
+__pycache__/
+.ipynb_checkpoints/
+
+# secrets must never be committed
+.env
