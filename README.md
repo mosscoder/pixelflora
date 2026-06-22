@@ -1,9 +1,5 @@
 <p align="center">
-  <img src="assets/pixelflora_logo.jpg" alt="pixelflora" width="320">
-</p>
-<p align="center">
-  <img src="assets/inat_sample.gif" alt="sample of harvested iNaturalist imagery" width="360">
-  <br><sub>Sample harvest. CC0 and CC BY images via iNaturalist (<a href="assets/inat_sample_credits.md">credits</a>)</sub>
+  <img src="assets/pixelflora_logo.jpg" alt="pixelflora" width="480">
 </p>
 
 # pixelflora
