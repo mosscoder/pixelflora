@@ -57,9 +57,17 @@ Each task is described by a single TOML file that names the species and any
 filters, image options, division settings, and publishing settings. The commands:
 
 ```bash
-pixelflora run     dev/montana_natives/request.toml    # the whole sequence
-pixelflora resolve dev/montana_natives/request.toml    # only resolve the taxon
-pixelflora harvest dev/montana_natives/request.toml    # harvest and filter, no downloads
+# Run the entire sequence: resolve the taxa, harvest and filter the records,
+# download the images, assemble the dataset, divide it, and optionally publish.
+pixelflora run     dev/montana_natives/request.toml
+
+# Only look up each species on iNaturalist and print the matched taxon, so you
+# can confirm the names are right before harvesting anything.
+pixelflora resolve dev/montana_natives/request.toml
+
+# Harvest and filter the records and write the manifests, but download no
+# images, so you can see how many records match before downloading anything.
+pixelflora harvest dev/montana_natives/request.toml
 ```
 
 A run writes everything to the directory you set under `[output]`:
@@ -81,25 +89,70 @@ A run writes everything to the directory you set under `[output]`:
 
 ## Several species in one request
 
-To build a dataset that tells several species apart, list each one as a
-`[[species]]` entry, which is a TOML array of tables. A single `[species]` entry
-still works when you want only one. Every image is given a `label` of the form
-`Genus species`. The image limit `max_images` applies to each species on its own,
-so the classes stay balanced, and the division into training and test sets is
-done inside each species, so that every species appears in both sets no matter
-which method of division you choose.
+A request is one TOML file. List each species as its own `[[species]]` block to
+build a dataset that tells them apart, or use a single `[species]` block for one.
+Here is a full request with the purpose of every line explained. The optional
+settings are shown commented out.
 
 ```toml
+# Each [[species]] block adds one species as its own class in the dataset.
+# Repeat the block for several classes, or use one [species] block for a single class.
 [[species]]
-genus = "Lupinus"
-species = "sericeus"
+genus   = "Lupinus"        # the genus
+species = "sericeus"       # the species epithet (the class label becomes "Lupinus sericeus")
 
 [[species]]
-genus = "Lupinus"
-species = "argenteus"
+genus   = "Gaillardia"
+species = "aristata"
+
+[[species]]
+genus   = "Achillea"
+species = "millefolium"
+
+[sources]
+enabled = ["inaturalist"]  # where records are gathered from (iNaturalist is the only source)
+
+[filters]
+has_coordinates        = true          # keep only records that carry a location
+require_research_grade = true          # keep only observations the community has confirmed
+exclude_captive        = true          # drop cultivated or planted individuals, keeping wild plants
+year_range             = [2015, 2026]  # keep observations made within these years, ends included
+# max_coordinate_uncertainty_m = 1000  # optional: reject locations vaguer than this many meters
+# reproductive_condition = ["flowering"]  # optional: keep only flowering plants, for example
+# license = ["CC0", "CC-BY"]           # optional: keep only these license tags (off by default)
+
+[media]
+max_images            = 100          # the most images to keep per species, so classes stay balanced
+images_per_occurrence = 1            # how many photographs to take from each observation
+min_pixels            = 200          # skip an image whose shorter side is below this many pixels
+max_dimension         = 1024         # shrink the longer side to this many pixels, keeping proportions
+prefer_size           = "original"   # which iNaturalist image size to request
+
+[output]
+dir = "dev/montana_natives/out"      # the folder to write images, dataset, and records into
+
+[split]
+strategy      = "random"  # how to divide the data: random, geographic, or temporal
+test_fraction = 0.25      # the share of each species held back for testing
+seed          = 1312      # a fixed seed so the same division repeats exactly
+# cell_size_deg   = 1.0   # for geographic: the size of the grid cells in degrees
+# test_after_year = 2024  # for temporal: send observations from this year onward into the test set
+
+[publish]
+private = true   # create the dataset as private on the Hugging Face Hub (the default)
+push    = false  # set to true to actually upload, which needs HF_TOKEN in your environment
+# repo_id = "mosscoder/montana_natives"  # optional: the dataset name on the Hub
+
+[dataset]
+name        = "Montana native forbs (3 species)"   # a readable title for the dataset
+description = "Three forbs for a classifier of several species, from iNaturalist."
 ```
 
-See `dev/montana_natives/` for a worked example of three species.
+Every image is labelled `Genus species`. `max_images` applies to each species
+separately, so the classes stay balanced, and the training and test sets are
+formed inside each species, so every species appears in both. This mirrors the
+request stored at `dev/montana_natives/request.toml`, with the optional settings
+added here as comments.
 
 ## What is recorded for each image
 
