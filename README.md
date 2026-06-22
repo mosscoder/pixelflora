@@ -74,8 +74,9 @@ A run writes everything to the directory you set under `[output]`:
 
 * `images/`, the downloaded photographs, with identical files removed by sha256
   checksum and grouped into one folder per species.
-* `dataset/`, the dataset itself in Hugging Face format (Arrow and Parquet, with
-  the image data included).
+* `dataset/`, one subfolder for each species, named like `lupinus_sericeus`. Each
+  is a configuration in Hugging Face format (Arrow and Parquet, with the image
+  data included) holding that species' own train and test split.
 * `manifest.raw.jsonl`, every record that was harvested, with its full account of
   origin.
 * `manifest.filtered.jsonl`, the records that passed your filters.
@@ -148,11 +149,23 @@ name        = "Montana native forbs (3 species)"   # a readable title for the da
 description = "Three forbs for a classifier of several species, from iNaturalist."
 ```
 
-Every image is labelled `Genus species`. `max_images` applies to each species
-separately, so the classes stay balanced, and the training and test sets are
-formed inside each species, so every species appears in both. This mirrors the
-request stored at `dev/montana_natives/request.toml`, with the optional settings
-added here as comments.
+Every image is labelled `Genus species`, and `max_images` applies to each species
+separately, so the classes stay balanced. This mirrors the request stored at
+`dev/montana_natives/request.toml`, with the optional settings added here as
+comments.
+
+On the Hugging Face Hub each species becomes its own **configuration** of the
+dataset, with its own train and test split, loaded like this:
+
+```python
+from datasets import load_dataset
+ds = load_dataset("mosscoder/montana_natives", "lupinus_sericeus")
+```
+
+Because the configurations are independent, you can add a species later by
+running pixelflora for it and pushing. The configurations already published stay
+exactly as they are, which makes it easy to grow the dataset one species at a
+time.
 
 ## What is recorded for each image
 

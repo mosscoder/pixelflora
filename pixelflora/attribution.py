@@ -102,7 +102,7 @@ def class_counts(records) -> Counter:
     return c
 
 
-def dataset_card(*, name, description, taxa, records, split_strategy, dd_sizes,
+def dataset_card(*, name, description, taxa, records, split_strategy, config_sizes,
                  lic_report, accessed, sources) -> str:
     contributors = _contributors(records)
     datasets = _datasets(records)
@@ -122,7 +122,10 @@ def dataset_card(*, name, description, taxa, records, split_strategy, dd_sizes,
     else:
         taxon_line = f"- **Classes:** {len(classes)} species (see below)"
     class_rows = "\n".join(f"| {k} | {v} |" for k, v in classes.most_common())
-    split_rows = "\n".join(f"| {k} | {v} |" for k, v in sorted(dd_sizes.items()))
+    config_rows = "\n".join(
+        f"| `{cfg}` | " + ", ".join(f"{s} {n}" for s, n in sorted(sizes.items())) + " |"
+        for cfg, sizes in config_sizes.items()
+    )
     ds_rows = "\n".join(
         f"| {d['title']} | {d['source']} | {d.get('doi') or '—'} | {d['count']} |"
         for d in sorted(datasets.values(), key=lambda x: -x["count"])
@@ -155,11 +158,15 @@ viewer: false
 |---|---|
 {class_rows}
 
-## Splits
+## Configurations (one per species)
 
-| split | images |
+Each species is a separate configuration with its own train and test split,
+loaded with `load_dataset("<repo_id>", "<configuration>")`. New species can be
+added later as new configurations without changing the ones already published.
+
+| configuration | splits (images) |
 |---|---|
-{split_rows}
+{config_rows}
 
 ## License breakdown (per image)
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import attribution
 from .config import Config
-from .dataset import assemble
+from .dataset import assemble_configs
 from .download import download_images
 from .filters import apply_filters
 from .http import PoliteClient
@@ -101,13 +101,14 @@ def run(request_path: str, config: Config | None = None) -> dict:
     _log(f"download: {stats}")
     _write_manifest(out / "manifest.images.jsonl", kept)
 
-    # 5. assemble + 6. split (split WITHIN each class for multi-species)
-    group_by = "label" if spec.is_multispecies else None
-    dd = assemble(kept, spec.split, group_by=group_by)
-    dd_sizes = {k: v.num_rows for k, v in dd.items()}
-    _log(f"assemble: splits={dd_sizes}" + (" (grouped by class)" if group_by else ""))
-    dd.save_to_disk(str(out / "dataset"))
-    _write_metadata_csv(out / "metadata.csv", dd)
+    # 5. assemble + 6. split: one configuration per species, each split on its own
+    configs = assemble_configs(kept, spec.split)
+    config_sizes = {name: {s: ds.num_rows for s, ds in dd.items()}
+                    for name, dd in configs.items()}
+    _log(f"assemble: {len(configs)} configuration(s): {config_sizes}")
+    for name, dd in configs.items():
+        dd.save_to_disk(str(out / "dataset" / name))
+    _write_metadata_csv(out / "metadata.csv", configs)
 
     # 7. attribution / provenance artifacts
     accessed = attribution.today()
@@ -117,27 +118,27 @@ def run(request_path: str, config: Config | None = None) -> dict:
     if spec.dataset.name:
         name = spec.dataset.name
     elif spec.is_multispecies:
-        name = f"Botanical dataset ({len(set(per_class))} species)"
+        name = f"Botanical dataset ({len(config_sizes)} species)"
     else:
         name = RequestSpec.label_of(spec.species[0])
     (out / "CITATION.cff").write_text(
         attribution.citation_cff(name, accessed, lic_report["total_images"], spec.sources))
     (out / "README.md").write_text(attribution.dataset_card(
         name=name, description=spec.dataset.description, taxa=taxa, records=kept,
-        split_strategy=spec.split.strategy, dd_sizes=dd_sizes, lic_report=lic_report,
+        split_strategy=spec.split.strategy, config_sizes=config_sizes, lic_report=lic_report,
         accessed=accessed, sources=spec.sources))
 
-    # 8. publish (private by default; dry run unless opted in)
-    pub = publish(dd, str(out), spec, config)
+    # 8. publish (private by default; dry run unless opted in): one config per species
+    pub = publish(configs, str(out), spec, config)
     _log(f"publish: {pub}")
 
     summary = {
         "classes": dict(per_class),
+        "configs": config_sizes,
         "taxa": [t.model_dump() for t in taxa],
         "sources": spec.sources,
         "occurrences_kept": len(kept),
         "download_stats": stats,
-        "splits": dd_sizes,
         "license_report": lic_report,
         "repo_id": resolve_repo_id(spec, config),
         "publish": pub,
@@ -154,15 +155,16 @@ def _write_manifest(path: Path, records: list[OccurrenceRecord]) -> None:
             fh.write(json.dumps(r.model_dump(exclude={"raw"}), default=str) + "\n")
 
 
-def _write_metadata_csv(path: Path, dd) -> None:
+def _write_metadata_csv(path: Path, configs) -> None:
+    """One flat table across all configurations, with config and split columns."""
     import csv
     rows, fieldnames = [], None
-    for split_name, ds in dd.items():
-        cols = [c for c in ds.column_names if c != "image"]
-        fieldnames = ["split"] + cols
-        for r in ds.remove_columns(["image"]):
-            r = {"split": split_name, **r}
-            rows.append(r)
+    for cfg_name, dd in configs.items():
+        for split_name, ds in dd.items():
+            cols = [c for c in ds.column_names if c != "image"]
+            fieldnames = ["config", "split"] + cols
+            for r in ds.remove_columns(["image"]):
+                rows.append({"config": cfg_name, "split": split_name, **r})
     if fieldnames:
         with path.open("w", newline="") as fh:
             w = csv.DictWriter(fh, fieldnames=fieldnames)
