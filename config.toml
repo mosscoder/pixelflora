@@ -8,8 +8,9 @@ user_agent   = "pixelflora/0.1 (+https://github.com/mosscoder/pixelflora; contac
 contact_email = "kdoherty@mpgranch.com"
 timeout_s    = 60
 max_retries  = 4
-rate_limit_s = 1.0           # iNaturalist best practice: <= 1 request/second (<= 60/min)
-download_workers = 1         # keep within iNat's ~1 req/s guidance for image fetches too
+rate_limit_s = 1.0           # iNaturalist API best practice: <= 1 request/second (<= 60/min)
+download_workers = 10        # photo files come from iNat's bulk open-data CDN, not the API, so fetch concurrently
+download_rate_limit_s = 0.1  # per-host pacing for photo fetches; the S3 open-data bucket is fine, this protects the static.inaturalist.org CDN
 
 [cache]
 dir = ".pixelflora_cache"    # raw API responses are cached here for replay/reproducibility

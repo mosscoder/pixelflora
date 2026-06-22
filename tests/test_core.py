@@ -91,9 +91,113 @@ def test_grouped_split_keeps_each_class_in_both():
     print("ok: grouped_split_keeps_each_class_in_both")
 
 
+def test_resumable_download_retries_only_failures():
+    """The downloader reuses files already fetched ok, refetches only failures, and
+    keeps dedup across runs (the resume / backfill feature)."""
+    import io
+    import tempfile
+
+    from PIL import Image
+
+    from pixelflora.download import download_images
+
+    def _png(seed):
+        im = Image.new("RGB", (300, 300), (seed % 256, (seed * 7) % 256, (seed * 13) % 256))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    class _FakeClient:
+        def __init__(self, fail_urls):
+            self.fail_urls = set(fail_urls)
+            self.calls = []
+
+        def get_bytes(self, url):
+            self.calls.append(url)
+            if url in self.fail_urls:
+                raise RuntimeError("simulated CDN failure")
+            return _png(int(url.split("/")[-1].split(".")[0]))
+
+    def _mk(i):
+        return OccurrenceRecord(
+            source="t", occurrence_id=str(i), basis_of_record="HUMAN_OBSERVATION",
+            label="Test species",
+            images=[ImageRef(image_id=f"img{i}", source_url=f"http://h/{i}.png", license=lic.CC0)])
+
+    with tempfile.TemporaryDirectory() as d:
+        recs = [_mk(1), _mk(2), _mk(3)]
+        c1 = _FakeClient(fail_urls={"http://h/2.png"})
+        s1 = download_images(recs, d, c1, workers=2, min_pixels=0, max_dimension=0)
+        assert s1["ok"] == 2 and s1["failed"] == 1, s1
+
+        # persist prior per-image state as the manifest would, then re-harvest fresh objects
+        prior = {img.image_id: {"download_status": img.download_status, "sha256": img.sha256,
+                                "local_path": img.local_path, "width": img.width,
+                                "height": img.height, "image_format": img.image_format,
+                                "file_size": img.file_size}
+                 for r in recs for img in r.images}
+        recs2 = [_mk(1), _mk(2), _mk(3)]
+        c2 = _FakeClient(fail_urls=set())                  # CDN healthy now
+        s2 = download_images(recs2, d, c2, workers=2, min_pixels=0, max_dimension=0, prior=prior)
+        assert s2["reused"] == 2, s2                       # img1 + img3 reused, not refetched
+        assert s2["ok"] == 1 and s2["failed"] == 0, s2     # only img2 retried, now ok
+        assert c2.calls == ["http://h/2.png"], c2.calls    # the sole network call was the failure
+    print("ok: resumable_download_retries_only_failures")
+
+
+def test_download_to_target_tops_up_past_dups_and_failures():
+    """With a target, the downloader keeps pulling from the buffer until N unique
+    images land, skipping failures and duplicates, and fetches no more than needed."""
+    import io
+    import tempfile
+
+    from PIL import Image
+
+    from pixelflora.download import download_images
+
+    def _png(seed):
+        im = Image.new("RGB", (300, 300), (seed % 256, (seed * 7) % 256, (seed * 13) % 256))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    class _FakeClient:
+        def __init__(self, fail_urls=(), alias=None):
+            self.fail_urls = set(fail_urls)
+            self.alias = alias or {}
+            self.calls = []
+
+        def get_bytes(self, url):
+            self.calls.append(url)
+            if url in self.fail_urls:
+                raise RuntimeError("simulated failure")
+            seed_url = self.alias.get(url, url)
+            return _png(int(seed_url.split("/")[-1].split(".")[0]))
+
+    def _mk(i):
+        return OccurrenceRecord(
+            source="t", occurrence_id=str(i), basis_of_record="HUMAN_OBSERVATION",
+            label="Test species",
+            images=[ImageRef(image_id=f"img{i}", source_url=f"http://h/{i}.png", license=lic.CC0)])
+
+    # 6 candidates in the buffer, target 3 unique. img2 fails; img4 is byte-identical to img1.
+    recs = [_mk(i) for i in range(1, 7)]
+    client = _FakeClient(fail_urls={"http://h/2.png"}, alias={"http://h/4.png": "http://h/1.png"})
+    with tempfile.TemporaryDirectory() as d:
+        stats = download_images(recs, d, client, workers=3, min_pixels=0,
+                                max_dimension=0, target_per_class=3)
+    assert stats["ok"] == 3, stats                          # img1, img3, img5
+    assert stats["failed"] == 1, stats                      # img2
+    assert stats["duplicate"] == 1, stats                   # img4 == img1 by bytes, not counted
+    assert "http://h/6.png" not in client.calls, client.calls  # target met at img5; img6 untouched
+    print("ok: download_to_target_tops_up_past_dups_and_failures")
+
+
 if __name__ == "__main__":
     for fn in [test_license_normalize, test_derived_day_of_year, test_filters_license_optin,
                test_geographic_no_leakage, test_temporal_holds_out_recent,
-               test_multispecies_parse, test_grouped_split_keeps_each_class_in_both]:
+               test_multispecies_parse, test_grouped_split_keeps_each_class_in_both,
+               test_resumable_download_retries_only_failures,
+               test_download_to_target_tops_up_past_dups_and_failures]:
         fn()
     print("ALL CORE TESTS PASSED")

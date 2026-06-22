@@ -30,7 +30,8 @@ class Config:
     timeout_s: int = 60
     max_retries: int = 4
     rate_limit_s: float = 1.0          # iNaturalist best practice: <= 1 req/s
-    download_workers: int = 1
+    download_workers: int = 10         # photo files come from a bulk CDN/S3, fetch them concurrently
+    download_rate_limit_s: float = 0.1  # gentle per-host pacing for photo fetches so bulk runs don't trip the static.inaturalist.org CDN
     cache_dir: str = ".pixelflora_cache"
     publish_private: bool = True
     publish_owner: str = ""
@@ -56,6 +57,7 @@ class Config:
             cfg.max_retries = http.get("max_retries", cfg.max_retries)
             cfg.rate_limit_s = http.get("rate_limit_s", cfg.rate_limit_s)
             cfg.download_workers = http.get("download_workers", cfg.download_workers)
+            cfg.download_rate_limit_s = http.get("download_rate_limit_s", cfg.download_rate_limit_s)
             cfg.cache_dir = data.get("cache", {}).get("dir", cfg.cache_dir)
             pub = data.get("publish", {})
             cfg.publish_private = pub.get("private", cfg.publish_private)

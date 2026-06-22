@@ -5,6 +5,7 @@ provenance artifacts at each step so any pull is inspectable and reproducible.
 from __future__ import annotations
 
 import json
+import shutil
 from collections import Counter, OrderedDict
 from pathlib import Path
 
@@ -59,11 +60,19 @@ def run(request_path: str, config: Config | None = None) -> dict:
         max_retries=config.max_retries, rate_limit_s=config.rate_limit_s,
         cache_dir=config.cache_dir,
     )
+    # Photo files live on iNaturalist's bulk open-data CDN/S3, a different host than the
+    # rate-limited API, so they get their own concurrent, un-throttled client. The API
+    # harvest above stays polite at rate_limit_s; only static file fetches are sped up.
+    media_client = PoliteClient(
+        user_agent=config.user_agent, timeout_s=config.timeout_s,
+        max_retries=config.max_retries, rate_limit_s=config.download_rate_limit_s,
+        cache_dir=None,
+    )
 
     # 1. resolve + 2. harvest — per species (a request may list many), per source
     all_records: list[OccurrenceRecord] = []
     taxa = []
-    budget = max(spec.media.max_images * 3, spec.media.max_images + 50)  # per species
+    budget = spec.media.buffer  # per species: harvest a candidate buffer above the target (max_images)
     for sp in spec.species:
         label = RequestSpec.label_of(sp)
         for source_name in spec.sources:
@@ -84,21 +93,30 @@ def run(request_path: str, config: Config | None = None) -> dict:
          f"{len({RequestSpec.label_of(s) for s in spec.species})} class(es)")
     _write_manifest(out / "manifest.raw.jsonl", all_records)
 
-    # 3. filter, then cap images PER class (so classes stay balanced near max_images)
+    # 3. filter, then cap to the per-class candidate buffer. The downloader trims to the
+    #    target (max_images) after fetching, topping up past duplicates and failures.
     kept, reasons = apply_filters(all_records, spec.filters)
-    kept = _cap_per_species(kept, spec.media.max_images)
+    kept = _cap_per_species(kept, spec.media.buffer)
     per_class = Counter(r.label for r in kept for _ in r.images)
-    _log(f"filter+cap: kept {len(kept)} occurrences; per-class images={dict(per_class)}; "
+    _log(f"filter+cap: kept {len(kept)} candidate occurrences; per-class candidates={dict(per_class)}; "
          f"rejections={dict(reasons)}")
     _write_manifest(out / "manifest.filtered.jsonl", kept)
     (out / "rejections.json").write_text(json.dumps(dict(reasons), indent=2))
 
-    # 4. download bytes (per-class cap already applied; no global cap here)
+    # 4. download bytes (per-class cap already applied; no global cap here).
+    #    Resume from any prior run's image manifest: reuse files already fetched ok,
+    #    retry only what failed, and carry dedup across runs.
+    prior = _load_prior_images(out / "manifest.images.jsonl")
+    if prior:
+        _log(f"resume: {len(prior)} images in prior manifest; reusing successful ones, retrying the rest")
     stats = download_images(
-        kept, str(out), client, workers=config.download_workers,
+        kept, str(out), media_client, workers=config.download_workers,
         min_pixels=spec.media.min_pixels, max_dimension=spec.media.max_dimension,
+        prior=prior, target_per_class=spec.media.max_images,
     )
-    _log(f"download: {stats}")
+    downloaded_per_class = Counter(
+        r.label for r in kept for img in r.images if img.download_status == "ok")
+    _log(f"download: {stats}; per-class kept={dict(downloaded_per_class)}")
     _write_manifest(out / "manifest.images.jsonl", kept)
 
     # 5. assemble + 6. split: one configuration per species, each split on its own
@@ -107,7 +125,10 @@ def run(request_path: str, config: Config | None = None) -> dict:
                     for name, dd in configs.items()}
     _log(f"assemble: {len(configs)} configuration(s): {config_sizes}")
     for name, dd in configs.items():
-        dd.save_to_disk(str(out / "dataset" / name))
+        cfg_dir = out / "dataset" / name
+        if cfg_dir.exists():           # re-runs: clear stale shards before re-saving
+            shutil.rmtree(cfg_dir)
+        dd.save_to_disk(str(cfg_dir))
     _write_metadata_csv(out / "metadata.csv", configs)
 
     # 7. attribution / provenance artifacts
@@ -133,7 +154,7 @@ def run(request_path: str, config: Config | None = None) -> dict:
     _log(f"publish: {pub}")
 
     summary = {
-        "classes": dict(per_class),
+        "classes": dict(downloaded_per_class),
         "configs": config_sizes,
         "taxa": [t.model_dump() for t in taxa],
         "sources": spec.sources,
@@ -147,6 +168,24 @@ def run(request_path: str, config: Config | None = None) -> dict:
     (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str))
     _log(f"done -> {out}")
     return summary
+
+
+def _load_prior_images(path: Path) -> dict | None:
+    """Map image_id -> a previous run's per-image manifest record, so a re-run can
+    reuse already-downloaded files and retry only the failures. Returns None if no
+    prior manifest exists (a first run)."""
+    if not path.exists():
+        return None
+    prior: dict = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        rec = json.loads(line)
+        for img in rec.get("images", []):
+            iid = img.get("image_id")
+            if iid:
+                prior[iid] = img
+    return prior or None
 
 
 def _write_manifest(path: Path, records: list[OccurrenceRecord]) -> None:

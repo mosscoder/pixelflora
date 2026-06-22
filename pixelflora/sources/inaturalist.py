@@ -90,7 +90,7 @@ class INaturalistSource(Source):
 
     def harvest(self, spec, taxon) -> Iterator[OccurrenceRecord]:
         per_page, id_below, emitted = 200, None, 0
-        cap = spec.media.max_images
+        cap = spec.media.buffer  # harvest a buffer above the target so dups/failures can be topped up
         size = spec.media.prefer_size if spec.media.prefer_size in _SIZES else "original"
         while emitted < cap:
             params = {**self._base_params(spec, taxon),

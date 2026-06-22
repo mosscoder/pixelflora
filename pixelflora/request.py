@@ -49,6 +49,15 @@ class MediaSpec(BaseModel):
     min_pixels: int = 0                  # minimum of (width, height); 0 = no minimum
     max_dimension: int = 1024            # cap longest edge (px), aspect kept; 0/neg = no cap
     prefer_size: str = "original"        # original | large (source-dependent)
+    overharvest: float = 1.5             # harvest this multiple of max_images as candidates,
+                                         # so duplicates and failed fetches can be topped up
+
+    @property
+    def buffer(self) -> int:
+        """Candidate occurrences to harvest per class: a little over ``max_images`` so
+        the downloader can top up past duplicates and failed fetches and still hit the
+        target. Never less than ``max_images``."""
+        return max(self.max_images, int(self.max_images * max(self.overharvest, 1.0)))
 
 
 class SplitSpec(BaseModel):

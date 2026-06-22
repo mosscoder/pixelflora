@@ -4,11 +4,21 @@ Fetches the actual image bytes referenced by each ImageRef, verifies they decode
 as images, records true dimensions + sha256 + size, dedupes identical bytes, and
 writes files to ``<out>/images/``. Updates each ImageRef in place. Bytes are only
 ever fetched here — harvesting and filtering stay cheap and re-runnable.
+
+Resume: pass ``prior`` (image_id -> a previous run's per-image manifest record) and
+any image already fetched ok whose file is still on disk is reused untouched. Only
+new or previously failed images are (re)fetched, and prior checksums seed the dedup
+set, so retrying failures never re-downloads or duplicates data we already hold.
+
+Target: pass ``target_per_class`` to fetch each class only until that many unique
+images have actually landed. Duplicates and failed fetches do not count, so the
+downloader keeps pulling from the harvested buffer until the target is met.
 """
 from __future__ import annotations
 
 import hashlib
 import io
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,23 +38,39 @@ def _species_folder(label: str | None) -> str:
 def download_images(
     records: list[OccurrenceRecord], out_dir: str, client: PoliteClient,
     *, workers: int = 4, min_pixels: int = 0, max_dimension: int = 0,
-    max_images: int | None = None,
+    prior: dict | None = None, target_per_class: int | None = None,
 ) -> dict:
     img_dir = Path(out_dir) / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
 
-    # flatten to a work list, honoring the global image cap
-    jobs: list[tuple[OccurrenceRecord, ImageRef]] = []
-    for rec in records:
-        for img in rec.images:
-            jobs.append((rec, img))
-            if max_images is not None and len(jobs) >= max_images:
-                break
-        if max_images is not None and len(jobs) >= max_images:
-            break
-
     seen_hashes: dict[str, str] = {}
-    stats = {"ok": 0, "failed": 0, "duplicate": 0, "too_small": 0}
+    stats = {"ok": 0, "failed": 0, "duplicate": 0, "too_small": 0, "reused": 0}
+
+    # Resume pass: an image a prior run already fetched (ok/duplicate) whose file is
+    # still on disk is reused as-is — never re-downloaded — and its checksum seeds
+    # the dedup set so a retried image identical to it is still caught. Everything
+    # else (new, previously failed, previously too-small) is grouped by class, in
+    # harvest order, as a candidate to (re)fetch.
+    pending: "OrderedDict[str, list[tuple[OccurrenceRecord, ImageRef]]]" = OrderedDict()
+    have_ok: dict[str, int] = {}
+    for rec in records:
+        label = rec.label or rec.scientific_name or "unspecified"
+        for img in rec.images:
+            p = prior.get(img.image_id) if prior else None
+            if (p and p.get("download_status") in ("ok", "duplicate")
+                    and p.get("local_path") and Path(p["local_path"]).exists()):
+                img.download_status = p["download_status"]
+                img.local_path = p["local_path"]
+                img.sha256 = p.get("sha256")
+                img.width, img.height = p.get("width"), p.get("height")
+                img.image_format, img.file_size = p.get("image_format"), p.get("file_size")
+                if img.sha256:
+                    seen_hashes.setdefault(img.sha256, img.local_path)
+                stats["reused"] += 1
+                if img.download_status == "ok":
+                    have_ok[label] = have_ok.get(label, 0) + 1
+                continue
+            pending.setdefault(label, []).append((rec, img))
 
     def fetch(job):
         rec, img = job
@@ -90,8 +116,24 @@ def download_images(
         seen_hashes[sha] = str(path)
         return "ok"
 
-    # modest concurrency; PoliteClient still rate-limits per host
+    # Fetch per class, stopping once the class reaches target_per_class unique images.
+    # Duplicates and failed fetches don't count toward the target, so the next buffered
+    # candidate is pulled to top it up. With no target, every candidate is fetched.
+    # Each batch is sized to the remaining need, so we fetch about target + losses, no
+    # more. (PoliteClient still rate-limits per host.)
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        for result in ex.map(fetch, jobs):
-            stats[result] = stats.get(result, 0) + 1
+        for label, cands in pending.items():
+            idx = 0
+            while idx < len(cands) and (
+                    target_per_class is None or have_ok.get(label, 0) < target_per_class):
+                if target_per_class is None:
+                    batch = cands[idx:]
+                else:
+                    need = target_per_class - have_ok.get(label, 0)
+                    batch = cands[idx:idx + max(need, 1)]
+                idx += len(batch)
+                for result in ex.map(fetch, batch):
+                    stats[result] = stats.get(result, 0) + 1
+                    if result == "ok":
+                        have_ok[label] = have_ok.get(label, 0) + 1
     return stats
