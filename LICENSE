@@ -19,11 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-NOTE ON DATA: This license covers the pixelflora source code only. Images and
-occurrence records harvested via this tool remain under their original licenses
-and the iNaturalist API Terms of Use. Datasets assembled with pixelflora are
-intended as PRIVATE training data; redistribution of harvested media is the
-user's responsibility and must respect each item's license and attribution.
