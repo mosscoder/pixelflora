@@ -51,6 +51,20 @@ class MediaSpec(BaseModel):
     prefer_size: str = "original"        # original | large (source-dependent)
     overharvest: float = 1.5             # harvest this multiple of max_images as candidates,
                                          # so duplicates and failed fetches can be topped up
+    sampling: Literal["recent", "month_balanced"] = "recent"
+                                         # "recent": newest-first by observation id (default;
+                                         #   biases toward the weeks before harvest for abundant taxa).
+                                         # "month_balanced": equalize candidates across month-of-year,
+                                         #   water-filled to per-month availability, so seasonal
+                                         #   (phenological) coverage is uniform rather than a recency snapshot.
+    months: Optional[list[int]] = None   # month_balanced only: restrict to these months 1-12 (None = all)
+
+    @field_validator("months")
+    @classmethod
+    def _months_range(cls, v):
+        if v is not None and (not v or any(m < 1 or m > 12 for m in v)):
+            raise ValueError("months must be a non-empty list of integers in 1..12")
+        return v
 
     @property
     def buffer(self) -> int:

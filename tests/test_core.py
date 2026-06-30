@@ -193,11 +193,30 @@ def test_download_to_target_tops_up_past_dups_and_failures():
     print("ok: download_to_target_tops_up_past_dups_and_failures")
 
 
+def test_water_fill_balances():
+    """month_balanced sampling allocator: equal per bucket, bounded by supply, exact total."""
+    from pixelflora.sources.inaturalist import water_fill
+    # flat supply -> equal allocation, summing exactly to total
+    q = water_fill({m: 5000 for m in range(1, 13)}, 1500)
+    assert sum(q.values()) == 1500 and set(q.values()) == {125}, q
+    # supply below target -> take everything (no over-allocation)
+    assert water_fill({5: 40, 6: 80, 7: 30}, 1500) == {5: 40, 6: 80, 7: 30}
+    # mixed: scarce buckets keep all; rich buckets equalize to a common ceiling; exact total
+    q = water_fill({1: 5, 2: 10, 4: 400, 5: 600, 6: 600}, 180)
+    assert sum(q.values()) == 180, q
+    assert q[1] == 5 and q[2] == 10, q                          # below ceiling -> all of them
+    assert max(q[4], q[5], q[6]) - min(q[4], q[5], q[6]) <= 1, q  # rich buckets within 1 of each other
+    # empty supply -> empty allocation (caller falls back to newest-first)
+    assert water_fill({}, 1000) == {}
+    print("ok: water_fill_balances")
+
+
 if __name__ == "__main__":
     for fn in [test_license_normalize, test_derived_day_of_year, test_filters_license_optin,
                test_geographic_no_leakage, test_temporal_holds_out_recent,
                test_multispecies_parse, test_grouped_split_keeps_each_class_in_both,
                test_resumable_download_retries_only_failures,
-               test_download_to_target_tops_up_past_dups_and_failures]:
+               test_download_to_target_tops_up_past_dups_and_failures,
+               test_water_fill_balances]:
         fn()
     print("ALL CORE TESTS PASSED")

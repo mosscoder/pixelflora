@@ -37,6 +37,42 @@ _SIZES = ("original", "large", "medium", "small", "square")
 _SIZE_RE = re.compile(r"/(square|small|medium|large|original)\.")
 
 
+def water_fill(avail: dict[int, int], total: int) -> dict[int, int]:
+    """Allocate ``total`` candidates across keys as evenly as possible, bounded by each
+    key's availability — the "equal per bucket, subject to supply" rule used for
+    month-balanced sampling.
+
+    Keys with enough supply are equalized to a common ceiling ``L`` chosen so
+    ``Σ min(avail, L) = total``; scarcer keys contribute everything they have and their
+    shortfall redistributes to the richer keys. If total supply <= ``total``, take
+    everything. Returns integer quotas summing to ``min(total, Σ avail)``.
+    """
+    keys = [k for k, a in avail.items() if a > 0]
+    if not keys or total <= 0:
+        return {}
+    supply = sum(avail[k] for k in keys)
+    if supply <= total:
+        return {k: avail[k] for k in keys}
+    lo, hi = 0.0, float(max(avail[k] for k in keys))
+    for _ in range(64):                       # binary-search the common ceiling L
+        mid = (lo + hi) / 2
+        if sum(min(avail[k], mid) for k in keys) < total:
+            lo = mid
+        else:
+            hi = mid
+    quota = {k: int(min(avail[k], hi)) for k in keys}
+    deficit = total - sum(quota.values())     # integer remainder left by the floors
+    headroom = sorted((k for k in keys if quota[k] < avail[k]), key=lambda k: -avail[k])
+    j = 0
+    while deficit > 0 and headroom:           # hand the remainder to keys above the ceiling
+        k = headroom[j % len(headroom)]
+        if quota[k] < avail[k]:
+            quota[k] += 1
+            deficit -= 1
+        j += 1
+    return quota
+
+
 class INaturalistSource(Source):
     name = "inaturalist"
 
@@ -89,12 +125,25 @@ class INaturalistSource(Source):
             return None
 
     def harvest(self, spec, taxon) -> Iterator[OccurrenceRecord]:
+        """Yield candidate occurrences. ``media.sampling`` selects the strategy:
+        'recent' (newest-first by observation id) or 'month_balanced' (uniform across
+        observed month-of-year, water-filled to availability)."""
+        if spec.media.sampling == "month_balanced":
+            yield from self._harvest_month_balanced(spec, taxon)
+        else:
+            yield from self._page(spec, taxon, spec.media.buffer)
+
+    def _page(self, spec, taxon, cap, *, month=None) -> Iterator[OccurrenceRecord]:
+        """Page newest-first (id desc) up to ``cap`` image-bearing records, optionally
+        restricted to a single observed ``month`` (1-12). The candidate buffer (cap)
+        sits above the target so the downloader can top up past dups/failures."""
         per_page, id_below, emitted = 200, None, 0
-        cap = spec.media.buffer  # harvest a buffer above the target so dups/failures can be topped up
         size = spec.media.prefer_size if spec.media.prefer_size in _SIZES else "original"
         while emitted < cap:
             params = {**self._base_params(spec, taxon),
                       "per_page": per_page, "order_by": "id", "order": "desc"}
+            if month is not None:
+                params["month"] = month
             if id_below:
                 params["id_below"] = id_below
             data = self.client.get_json(f"{API}/observations", params)
@@ -106,9 +155,44 @@ class INaturalistSource(Source):
                 if rec.images:
                     emitted += 1
                     yield rec
+                    if emitted >= cap:
+                        break
             id_below = results[-1]["id"]
             if len(results) < per_page:
                 break
+
+    def _month_histogram(self, spec, taxon) -> dict[int, int]:
+        """Per-month-of-year availability (all years) under the request's filters — the
+        same filters _base_params pushes server-side, so it matches the harvestable pool."""
+        params = {**self._base_params(spec, taxon),
+                  "date_field": "observed", "interval": "month_of_year"}
+        data = self.client.get_json(f"{API}/observations/histogram", params)
+        res = (data.get("results") or {}).get("month_of_year") or {}
+        return {int(k): int(v) for k, v in res.items() if int(v) > 0}
+
+    def _harvest_month_balanced(self, spec, taxon) -> Iterator[OccurrenceRecord]:
+        """Equalize candidates across month-of-year. Probe per-month availability, water-fill
+        a per-month quota up to the candidate buffer, page each month newest-first, then
+        ROUND-ROBIN the months so any prefix the downloader keeps (target_per_class) stays
+        balanced. Falls back to newest-first if the histogram probe yields nothing."""
+        try:
+            avail = self._month_histogram(spec, taxon)
+        except Exception:
+            avail = {}
+        allow = set(spec.media.months) if spec.media.months else set(range(1, 13))
+        avail = {m: c for m, c in avail.items() if m in allow}
+        if not avail:                                  # probe failed / empty -> graceful fallback
+            yield from self._page(spec, taxon, spec.media.buffer)
+            return
+        quota = water_fill(avail, spec.media.buffer)
+        by_month = {m: list(self._page(spec, taxon, q, month=m)) for m, q in sorted(quota.items())}
+        months = [m for m in sorted(by_month) if by_month[m]]
+        i = 0
+        while any(i < len(by_month[m]) for m in months):
+            for m in months:
+                if i < len(by_month[m]):
+                    yield by_month[m][i]
+            i += 1
 
     # ---- normalization --------------------------------------------------
     def _normalize(self, obs: dict, *, size: str) -> OccurrenceRecord:
